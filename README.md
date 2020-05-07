@@ -18,9 +18,9 @@ Upon execution Logic Apps kicks off 5 parallel flows. Each flow does the followi
 - Filters the articles to those that were published within the last week
 - Initializes a variable to hold an HTML table
 - Appends to the variable to open the HTML table
-- If there are no articles, handles this condition and write a specific message to a single row in the table indicating this condition
+- If there are no articles, handles this condition and writes a specific message to a single row in the table
 - If there are articles, appends to the variable by writing a table row for each article
-- Upon iterating through all articles, appends to the HTML table to close the article
+- Upon iterating through all articles, appends to the variable to close the HTML table
 
 When all of the content aggregation has completed, an email body is constructed and the email is sent out.
 
