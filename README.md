@@ -32,8 +32,10 @@ Notice the naming scheme of the steps. THis was done intentionally to maintain a
 
 ## Deployment
 
-- Create a resource group
-- Deploy the arm template using the CLI or PowerShell
+- Create a resource group:</br>
+``` az group create -n name -r region ```
+- Deploy the arm template using the CLI or PowerShell</br>
+```az deployment group create -g name --template-file azuredeploy.json```
 - You'll need to provide email recipients as a parameter
 - After deployment you will need to access the o365 connection in the portal and authorize it. Without conducting this step execution will fail.
 
