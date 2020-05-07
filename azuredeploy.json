@@ -1,0 +1,749 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "WorkflowName": {
+            "defaultValue": "WeeklyAzureUpdates",
+            "type": "String"
+        },
+        "emailRecipients": {
+            "type": "String"
+        },
+        "location": {
+            "type": "string",
+            "defaultValue": "[resourceGroup().location]",
+            "metadata": {
+                "description": "Location for all resources."
+            }
+        },
+        "office365ConnnectionName": {
+            "type": "string",
+            "defaultValue": "o365",
+            "metadata": {
+                "description": "The name of the office365 connection being created."
+            }
+        },
+        "rssConnnectionName": {
+            "type": "string",
+            "defaultValue": "rss",
+            "metadata": {
+                "description": "The name of the rss connection being created."
+            }
+        }
+    },
+    "variables": {},
+    "resources": [
+        {
+            "type": "Microsoft.Web/connections",
+            "apiVersion": "2016-06-01",
+            "name": "[parameters('office365ConnnectionName')]",
+            "location": "[parameters('location')]",
+            "properties": {
+                "displayName": "[parameters('office365ConnnectionName')]",
+                "customParameterValues": {},
+                "api": {
+                    "id": "[subscriptionResourceId('Microsoft.Web/locations/managedApis', parameters('location'), 'office365')]"
+                }
+            }
+        },
+        {
+            "type": "Microsoft.Web/connections",
+            "apiVersion": "2016-06-01",
+            "name": "[parameters('rssConnnectionName')]",
+            "location": "[parameters('location')]",
+            "properties": {
+                "displayName": "[parameters('rssConnnectionName')]",
+                "customParameterValues": {},
+                "api": {
+                    "id": "[subscriptionResourceId('Microsoft.Web/locations/managedApis', parameters('location'), 'rss')]"
+                }
+            }
+        },
+        {
+            "type": "Microsoft.Logic/workflows",
+            "apiVersion": "2017-07-01",
+            "name": "[parameters('WorkflowName')]",
+            "location": "[parameters('location')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Web/connections', parameters('office365ConnnectionName'))]",
+                "[resourceId('Microsoft.Web/connections', parameters('rssConnnectionName'))]"
+            ],
+            "properties": {
+                "state": "Enabled",
+                "definition": {
+                    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+                    "contentVersion": "1.0.0.0",
+                    "parameters": {
+                        "$connections": {
+                            "defaultValue": {},
+                            "type": "Object"
+                        }
+                    },
+                    "triggers": {
+                        "Recurrence": {
+                            "recurrence": {
+                                "frequency": "Week",
+                                "interval": 1,
+                                "schedule": {
+                                    "hours": [
+                                        "7"
+                                    ],
+                                    "weekDays": [
+                                        "Monday"
+                                    ]
+                                },
+                                "timeZone": "Eastern Standard Time"
+                            },
+                            "type": "Recurrence"
+                        }
+                    },
+                    "actions": {
+                        "A1Feed": {
+                            "runAfter": {},
+                            "type": "ApiConnection",
+                            "inputs": {
+                                "host": {
+                                    "connection": {
+                                        "name": "@parameters('$connections')['rss']['connectionId']"
+                                    }
+                                },
+                                "method": "get",
+                                "path": "/ListFeedItems",
+                                "queries": {
+                                    "feedUrl": "https://azurecomcdn.azureedge.net/en-us/blog/topics/security/feed/"
+                                }
+                            }
+                        },
+                        "A2FilterToPastWeek": {
+                            "runAfter": {
+                                "A1Feed": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Query",
+                            "inputs": {
+                                "from": "@body('A1Feed')",
+                                "where": "@greaterOrEquals(item()?['publishDate'], getPastTime(7, 'Day'))"
+                            }
+                        },
+                        "A3InitVariable": {
+                            "runAfter": {
+                                "A2FilterToPastWeek": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "AzureSecBlogTable",
+                                        "type": "string"
+                                    }
+                                ]
+                            }
+                        },
+                        "A4Condition": {
+                            "actions": {
+                                "AppendNull1": {
+                                    "runAfter": {},
+                                    "type": "AppendToStringVariable",
+                                    "inputs": {
+                                        "name": "AzureSecBlogTable",
+                                        "value": "<table>\n<tbody>\n<tr>\n<td colspan=2>No new items for this week.</td>\n</tr>\n</tbody>\n</table>"
+                                    }
+                                }
+                            },
+                            "runAfter": {
+                                "A3InitVariable": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "else": {
+                                "actions": {
+                                    "Close1": {
+                                        "runAfter": {
+                                            "ForEach1": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "AppendToStringVariable",
+                                        "inputs": {
+                                            "name": "AzureSecBlogTable",
+                                            "value": "</tbody>\n</table>"
+                                        }
+                                    },
+                                    "ForEach1": {
+                                        "foreach": "@body('A2FilterToPastWeek')",
+                                        "actions": {
+                                            "Append1": {
+                                                "runAfter": {},
+                                                "type": "AppendToStringVariable",
+                                                "inputs": {
+                                                    "name": "AzureSecBlogTable",
+                                                    "value": "<tr>\n<td>@{formatDateTime(items('ForEach1')['publishDate'],'yyyy-MM-dd')}</td>\n<td><a href=\"@{items('ForEach1')?['primaryLink']}\">@{items('ForEach1')['title']}</a><td>\n</tr>"
+                                                }
+                                            }
+                                        },
+                                        "runAfter": {
+                                            "Open1": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "Foreach"
+                                    },
+                                    "Open1": {
+                                        "runAfter": {},
+                                        "type": "AppendToStringVariable",
+                                        "inputs": {
+                                            "name": "AzureSecBlogTable",
+                                            "value": "<table>\n<thead>\n<tr>\n<th>Date</th>\n<th>Item</th>\n</tr>\n</thead>\n<tbody>"
+                                        }
+                                    }
+                                }
+                            },
+                            "expression": {
+                                "and": [
+                                    {
+                                        "equals": [
+                                            "@length(body('A2FilterToPastWeek'))",
+                                            0
+                                        ]
+                                    }
+                                ]
+                            },
+                            "type": "If"
+                        },
+                        "B1Feed": {
+                            "runAfter": {},
+                            "type": "ApiConnection",
+                            "inputs": {
+                                "host": {
+                                    "connection": {
+                                        "name": "@parameters('$connections')['rss']['connectionId']"
+                                    }
+                                },
+                                "method": "get",
+                                "path": "/ListFeedItems",
+                                "queries": {
+                                    "feedUrl": "https://azurecomcdn.azureedge.net/en-us/community/events/feed/?Country=UnitedStates"
+                                }
+                            }
+                        },
+                        "B2FilterToPastWeek": {
+                            "runAfter": {
+                                "B1Feed": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Query",
+                            "inputs": {
+                                "from": "@body('B1Feed')",
+                                "where": "@greaterOrEquals(item()?['publishDate'], getPastTime(7, 'Day'))"
+                            }
+                        },
+                        "B3InitVariable": {
+                            "runAfter": {
+                                "B2FilterToPastWeek": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "AzureEventsBlogTable",
+                                        "type": "string"
+                                    }
+                                ]
+                            }
+                        },
+                        "B4Condition": {
+                            "actions": {
+                                "AppendNull2": {
+                                    "runAfter": {},
+                                    "type": "AppendToStringVariable",
+                                    "inputs": {
+                                        "name": "AzureEventsBlogTable",
+                                        "value": "<table>\n<tbody>\n<tr>\n<td colspan=2>No new items for this week.</td>\n</tr>\n</tbody>\n</table>"
+                                    }
+                                }
+                            },
+                            "runAfter": {
+                                "B3InitVariable": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "else": {
+                                "actions": {
+                                    "Close2": {
+                                        "runAfter": {
+                                            "ForEach2": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "AppendToStringVariable",
+                                        "inputs": {
+                                            "name": "AzureEventsBlogTable",
+                                            "value": "</tbody>\n</table>"
+                                        }
+                                    },
+                                    "ForEach2": {
+                                        "foreach": "@body('B2FilterToPastWeek')",
+                                        "actions": {
+                                            "Append2": {
+                                                "runAfter": {},
+                                                "type": "AppendToStringVariable",
+                                                "inputs": {
+                                                    "name": "AzureEventsBlogTable",
+                                                    "value": "<tr>\n<td>@{formatDateTime(items('ForEach2')['publishDate'],'yyyy-MM-dd')}</td>\n<td><a href=\"@{items('ForEach2')?['primaryLink']}\">@{items('ForEach2')['title']}</a><td>\n</tr>"
+                                                }
+                                            }
+                                        },
+                                        "runAfter": {
+                                            "Open2": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "Foreach"
+                                    },
+                                    "Open2": {
+                                        "runAfter": {},
+                                        "type": "AppendToStringVariable",
+                                        "inputs": {
+                                            "name": "AzureEventsBlogTable",
+                                            "value": "<table>\n<thead>\n<tr>\n<th>Date</th>\n<th>Item</th>\n</tr>\n</thead>\n<tbody>"
+                                        }
+                                    }
+                                }
+                            },
+                            "expression": {
+                                "and": [
+                                    {
+                                        "equals": [
+                                            "@length(body('B2FilterToPastWeek'))",
+                                            0
+                                        ]
+                                    }
+                                ]
+                            },
+                            "type": "If"
+                        },
+                        "C1Feed": {
+                            "runAfter": {},
+                            "type": "ApiConnection",
+                            "inputs": {
+                                "host": {
+                                    "connection": {
+                                        "name": "@parameters('$connections')['rss']['connectionId']"
+                                    }
+                                },
+                                "method": "get",
+                                "path": "/ListFeedItems",
+                                "queries": {
+                                    "feedUrl": "https://azurecomcdn.azureedge.net/en-us/updates/feed/"
+                                }
+                            }
+                        },
+                        "C2FilterToPastWeek": {
+                            "runAfter": {
+                                "C1Feed": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Query",
+                            "inputs": {
+                                "from": "@body('C1Feed')",
+                                "where": "@greaterOrEquals(item()?['publishDate'], getPastTime(7, 'Day'))"
+                            }
+                        },
+                        "C3InitVariable": {
+                            "runAfter": {
+                                "C2FilterToPastWeek": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "AzureUpdatesTable",
+                                        "type": "string"
+                                    }
+                                ]
+                            }
+                        },
+                        "C4Condition": {
+                            "actions": {
+                                "AppendNull3": {
+                                    "runAfter": {},
+                                    "type": "AppendToStringVariable",
+                                    "inputs": {
+                                        "name": "AzureUpdatesTable",
+                                        "value": "<table>\n<tbody>\n<tr>\n<td colspan=2>No new items for this week.</td>\n</tr>\n</tbody>\n</table>"
+                                    }
+                                }
+                            },
+                            "runAfter": {
+                                "C3InitVariable": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "else": {
+                                "actions": {
+                                    "Close3": {
+                                        "runAfter": {
+                                            "ForEach3": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "AppendToStringVariable",
+                                        "inputs": {
+                                            "name": "AzureUpdatesTable",
+                                            "value": "</tbody>\n</table>"
+                                        }
+                                    },
+                                    "ForEach3": {
+                                        "foreach": "@body('C2FilterToPastWeek')",
+                                        "actions": {
+                                            "Append3": {
+                                                "runAfter": {},
+                                                "type": "AppendToStringVariable",
+                                                "inputs": {
+                                                    "name": "AzureUpdatesTable",
+                                                    "value": "<tr>\n<td>@{formatDateTime(items('ForEach3')['publishDate'],'yyyy-MM-dd')}</td>\n<td><a href=\"@{items('ForEach3')?['primaryLink']}\">@{items('ForEach3')['title']}</a><td>\n</tr>"
+                                                }
+                                            }
+                                        },
+                                        "runAfter": {
+                                            "Open3": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "Foreach"
+                                    },
+                                    "Open3": {
+                                        "runAfter": {},
+                                        "type": "AppendToStringVariable",
+                                        "inputs": {
+                                            "name": "AzureUpdatesTable",
+                                            "value": "<table>\n<thead>\n<tr>\n<th>Date</th>\n<th>Item</th>\n</tr>\n</thead>\n<tbody>"
+                                        }
+                                    }
+                                }
+                            },
+                            "expression": {
+                                "and": [
+                                    {
+                                        "equals": [
+                                            "@length(body('C2FilterToPastWeek'))",
+                                            0
+                                        ]
+                                    }
+                                ]
+                            },
+                            "type": "If"
+                        },
+                        "D1Feed": {
+                            "runAfter": {},
+                            "type": "ApiConnection",
+                            "inputs": {
+                                "host": {
+                                    "connection": {
+                                        "name": "@parameters('$connections')['rss']['connectionId']"
+                                    }
+                                },
+                                "method": "get",
+                                "path": "/ListFeedItems",
+                                "queries": {
+                                    "feedUrl": "https://azurecomcdn.azureedge.net/en-us/blog/topics/announcements/feed/"
+                                }
+                            }
+                        },
+                        "D2FilterToPastWeek": {
+                            "runAfter": {
+                                "D1Feed": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Query",
+                            "inputs": {
+                                "from": "@body('D1Feed')",
+                                "where": "@greaterOrEquals(item()?['publishDate'], getPastTime(7, 'Day'))"
+                            }
+                        },
+                        "D3InitVariable": {
+                            "runAfter": {
+                                "D2FilterToPastWeek": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "AzureAnnoucementsBlogTable",
+                                        "type": "string"
+                                    }
+                                ]
+                            }
+                        },
+                        "D4Condition": {
+                            "actions": {
+                                "AppendNull4": {
+                                    "runAfter": {},
+                                    "type": "AppendToStringVariable",
+                                    "inputs": {
+                                        "name": "AzureAnnoucementsBlogTable",
+                                        "value": "<table>\n<tbody>\n<tr>\n<td colspan=2>No new items for this week.</td>\n</tr>\n</tbody>\n</table>"
+                                    }
+                                }
+                            },
+                            "runAfter": {
+                                "D3InitVariable": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "else": {
+                                "actions": {
+                                    "Close4": {
+                                        "runAfter": {
+                                            "ForEach4": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "AppendToStringVariable",
+                                        "inputs": {
+                                            "name": "AzureAnnoucementsBlogTable",
+                                            "value": "</tbody>\n</table>"
+                                        }
+                                    },
+                                    "ForEach4": {
+                                        "foreach": "@body('D2FilterToPastWeek')",
+                                        "actions": {
+                                            "Append4": {
+                                                "runAfter": {},
+                                                "type": "AppendToStringVariable",
+                                                "inputs": {
+                                                    "name": "AzureAnnoucementsBlogTable",
+                                                    "value": "<tr>\n<td>@{formatDateTime(items('ForEach4')['publishDate'],'yyyy-MM-dd')}</td>\n<td><a href=\"@{items('ForEach4')?['primaryLink']}\">@{items('ForEach4')['title']}</a><td>\n</tr>"
+                                                }
+                                            }
+                                        },
+                                        "runAfter": {
+                                            "Open4": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "Foreach"
+                                    },
+                                    "Open4": {
+                                        "runAfter": {},
+                                        "type": "AppendToStringVariable",
+                                        "inputs": {
+                                            "name": "AzureAnnoucementsBlogTable",
+                                            "value": "<table>\n<thead>\n<tr>\n<th>Date</th>\n<th>Item</th>\n</tr>\n</thead>\n<tbody>"
+                                        }
+                                    }
+                                }
+                            },
+                            "expression": {
+                                "and": [
+                                    {
+                                        "equals": [
+                                            "@length(body('D2FilterToPastWeek'))",
+                                            0
+                                        ]
+                                    }
+                                ]
+                            },
+                            "type": "If"
+                        },
+                        "E1Feed": {
+                            "runAfter": {},
+                            "type": "ApiConnection",
+                            "inputs": {
+                                "host": {
+                                    "connection": {
+                                        "name": "@parameters('$connections')['rss']['connectionId']"
+                                    }
+                                },
+                                "method": "get",
+                                "path": "/ListFeedItems",
+                                "queries": {
+                                    "feedUrl": "https://azurecomcdn.azureedge.net/en-us/blog/topics/security/feed/"
+                                }
+                            }
+                        },
+                        "E2FilterToPastWeek": {
+                            "runAfter": {
+                                "E1Feed": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Query",
+                            "inputs": {
+                                "from": "@body('E1Feed')",
+                                "where": "@greaterOrEquals(item()?['publishDate'], getPastTime(7, 'Day'))"
+                            }
+                        },
+                        "E3InitVariable": {
+                            "runAfter": {
+                                "E2FilterToPastWeek": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "AzureArchBlogTable",
+                                        "type": "string"
+                                    }
+                                ]
+                            }
+                        },
+                        "E4Condition": {
+                            "actions": {
+                                "AppendNull5": {
+                                    "runAfter": {},
+                                    "type": "AppendToStringVariable",
+                                    "inputs": {
+                                        "name": "AzureArchBlogTable",
+                                        "value": "<table>\n<tbody>\n<tr>\n<td colspan=2>No new items for this week.</td>\n</tr>\n</tbody>\n</table>"
+                                    }
+                                }
+                            },
+                            "runAfter": {
+                                "E3InitVariable": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "else": {
+                                "actions": {
+                                    "Close5": {
+                                        "runAfter": {
+                                            "ForEach5": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "AppendToStringVariable",
+                                        "inputs": {
+                                            "name": "AzureArchBlogTable",
+                                            "value": "</tbody>\n</table>"
+                                        }
+                                    },
+                                    "ForEach5": {
+                                        "foreach": "@body('E2FilterToPastWeek')",
+                                        "actions": {
+                                            "Append5": {
+                                                "runAfter": {},
+                                                "type": "AppendToStringVariable",
+                                                "inputs": {
+                                                    "name": "AzureArchBlogTable",
+                                                    "value": "<tr>\n<td>@{formatDateTime(items('ForEach5')['publishDate'],'yyyy-MM-dd')}</td>\n<td><a href=\"@{items('ForEach5')?['primaryLink']}\">@{items('ForEach5')['title']}</a><td>\n</tr>"
+                                                }
+                                            }
+                                        },
+                                        "runAfter": {
+                                            "Open5": [
+                                                "Succeeded"
+                                            ]
+                                        },
+                                        "type": "Foreach"
+                                    },
+                                    "Open5": {
+                                        "runAfter": {},
+                                        "type": "AppendToStringVariable",
+                                        "inputs": {
+                                            "name": "AzureArchBlogTable",
+                                            "value": "<table>\n<thead>\n<tr>\n<th>Date</th>\n<th>Item</th>\n</tr>\n</thead>\n<tbody>"
+                                        }
+                                    }
+                                }
+                            },
+                            "expression": {
+                                "and": [
+                                    {
+                                        "equals": [
+                                            "@length(body('E2FilterToPastWeek'))",
+                                            0
+                                        ]
+                                    }
+                                ]
+                            },
+                            "type": "If"
+                        },
+                        "YEmailBody": {
+                            "runAfter": {
+                                "A4Condition": [
+                                    "Succeeded"
+                                ],
+                                "B4Condition": [
+                                    "Succeeded"
+                                ],
+                                "C4Condition": [
+                                    "Succeeded"
+                                ],
+                                "D4Condition": [
+                                    "Succeeded"
+                                ],
+                                "E4Condition": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "YEmailBody",
+                                        "type": "string",
+                                        "value": "<!DOCTYPE html>\n<html>\n<style>\n</style>\n\n<body>\n\n<p> <img src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAoAAAAC3CAYAAACCLe8fAABX6UlEQVR42uydCXxV1bX/19rn3PlmJhCSgCgyCIgg1gHRaOvQINXa9tZXW14q0lsIhBBo&#43;&#43;9gHy&#43;vw&#43;skIQSCpmiLw2uft3aSFrXaGmyrVeOMCE4oQxhDyHCTe&#43;85e/0/W0/6IiXknOReyLC&#43;n08&#43;gdxzz9l77X32/u1pLQEMwzAMwzDMsIIFIMMwDMMwDAtAhmEYhmEYZiijswkYhmEYhmFOTFFRkX7&#43;&#43;eenx&#43;PxNJfLVYiI2VLKLADwqM&#43;FEMcQsU1KeTSRSOyTUra89tprrfX19cZAzhdy0TIMwzAMw3xYH4XD4XSv1ztV07SLAGC2EGIyAGQTkRcA1I9mXRsDgAQidhJRMxFtl1Kur66urgcAYgHIMAzDMAwzwFmwYEFaWlrabE3TvggARQCQh4jv6yUioq5/H0/XZ&#43;pj0zS/lZ6e/oPKyko5UPPJS8AMwzDdCIVC7tzcXHdtbW0UACRbhGGGDVheXn6upmkrAWAeAGQdL/Z6En/dPyMi9W8a6JllAcgwzLCnrKwsV9f1OUKIS4loHAD4KioqjhLRG1LKPzU2Nr4QiUQ62FIMMzQpLi72TJ48&#43;QYAuA0ApiKiGMjLtwNGAL509fRAVjZeKlELcDVyBkkjmtYZ&#43;/uI3&#43;9oPdHnP/zdpDRNC8wmTfOztewjJaCUsqnz8OGnK295t3Mw52XZsmUTNE3Lk1L2Z8tGLJFIbKutrW0bqPksKirSZ8yYMQUAMvte7rLznXfeeXXz5s1RO9eHQiGtoKDgYiFEBSJeqZ4thBBdo3giSiDigsLCwv8pKytbX1NTs4ffLoYZWoRCIV9hYeEtiPhNRCzo9hGyAOyFnBEiP4FaNSDm4RBXzElHuBqPuvALAPDCiT5GX/p4MsRqBBjNhrWPpgEKFNtd&#43;Wk3AcDuQdwwabquhwHg87quYz&#43;EUauu68sA4OGBmtepU6eOE0LUIuIEROzT0isR7RkzZox6n3bYuT4/P/8yIcQaRDzP&#43;v7xr5kuhBgLACtcLlduaWnpbbW1tfv5DWOYoYEaeI4ZM&#43;ZzAPAfiDjqZHv8WACeAEOijhpkAGAmVydnIFDUq2GP5SBMcAFixvt7EdhcDpQAACKla1LTBn1WiNKFEKP647dTCJEnpfx4OBx&#43;vK6uLjEQXwVd169CxAsQ0dOP&#43;3QKIWy1a1/&#43;8peV4FylxF&#43;3zds97fdxI&#43;Ln3W73u7NmzfpBQ0NDgl8yhhn8XfCMGTPmAMBtw038ATuCZpjhg6ZpV2VkZIwdiGkrKSnJ0DTt0/0Uf47w&#43;/3qebMdNPpeRJw/e/bsCVybGGbws3Tp0tG6rn8bAMYNN/HHApBhhtNQF3F8PB4vHohpy87OvhARZ52q55WWlgYR8XIhhNtJo4&#43;IY3Vdv4RdaDHM4GbWrFkut9tdQkSXnmj2fzjAp4AZZvjgFUIUl5SU3Ldp06bmgZKoUCjkA4Ab&#43;3P4ow8EAWDEv275673NVEJ61apVWFlZydtyGWaQMmfOnLMA4AuI6HE4&#43;yeJ6CAivialfA0AjqjvCyGCRKTuOVUIcUZ/Bqcul6tASpkRi8VeSOWWHRaADDOMQMQLsrOzzwOA&#43;oGSpvz8/AmIeM1gsSERuV977TWeAWSYQdwUapp2FQBMhF58&#43;3V779WArxMAHjFN865YLPZMR0dHSzQa7RJoWlZWls/n8ynxdzUA7LQzSCwqKtLPPvvs9EAgcKYQYiYiXiyEuEhKuQMAFgAAC0CGYfotXFRjlENE14dCob9GIhFzgDTEH0XEsadyWTUWi8U9Hk9UCAFOZgER0SSi3ZFIhB1EM8wgJRwOpxPRXCGE7mD2zwCAezo7O/&#43;zB08Aqj2NA8DL6iccDrt68iO4atUqd2NjY7rP55uiRJ8QYo6U8gIhRJ4VYk61NXtjsVhK20QWgAwzXIa8HzRymhDiyqysrAIAeO90p2nhwoUjreVf/VRuwr7rrruaKioqniOijzrZC01ExwDgeWB3VwwzaHG73WMRcSo4mP0joqdN0/y&#43;XTdQJ1i6FYsWLRrt9XrPaWlpKQoEAnMQ8RwAyP3AUcOpP5LBApBhhh&#43;TVeMDAL843UImGAxeBgAz7DbEyURK&#43;b&#43;I&#43;ElEnGz3KwCw5dixYy9yFWKYwYumaZOJKEe1fzbbnaiUcv3atWv77FO2vLx8mqZpG1X7a&#43;1BBjvxhVMJnwJmmGGEtQzsBYBPl5aWntbIPfPmzfMj4vWImH46np&#43;ZmfmyaZo/JKJGG3aTRPRXIvrR3Xff3co1iWEGL0KIcUKIoF3RRURvGIbxdD8HzJmIOB0R044f8J6uE8gsABlmGNHN3cEliHju6UzLmWeeOQ0RLz9dz6&#43;srJTNzc2/lFJ&#43;VUr5IgB0niASiBJ&#43;TQAQAYDlVVVV27gWMczgbgaJKM&#43;J5lIC8Omnn96XjDH46RR8x8NLwAwzPEfAozwez0dDodAzp&#43;kwCGqadj0AFJ5OB6ybNm3qBIBfLFu27CVE/AQAXExEo4nIjYgtAPCWlPKxaDT6SF1d3WGuOQwzuAmHw7oQwudA/EkAeGcoRv9hAcgww1QDEtF1o0aN&#43;hkA7DvVD1&#43;4cGGBEOJqRBwIofrk2rVrXwWAV8vLyzPj8Xia2&#43;3WOjo6YrFY7KglEhmGGZ4kEHHfUMwYC0CGGYZYs27n6ro&#43;GwB&#43;daqfHwwGiwBg2kCzS3V1dTMANHMNYRgGPliuJcu9y9CbBeDiZZihI&#43;qIKGYtWfTWqCmCAHDdvHnz/KcynaFQKCiE&#43;CwA&#43;OgkTvi65cfg0mUYhmEByDBMz6JpBwC8a7sBEOKK8ePHTzyVaSwsLJxJRBf3Fn/Tcrr8pOV7j2EYhmEByDBMD6LpbSL6M9kIb2FdU6Bp2rWnKn2hUMgNADcIIUb0dq2U8hAR/R4R41yyDMMwyYX3ADLM0CKBiL8nousRMbcXsYgA4JJSXlNWVnZ3TU3NoVQnrrCwcCwifpyIRG8HfxGxIZFIbHO73cNe14dCIRcAaLm5uVpnZ&#43;f7hgsEAtje3k5er5c8Ho/Z3t5upDJw/CBEhEIh3e/3C4/HIwzD&#43;OeBI13XzVgsJpXd6urqjIEc2SUUCml5eXm6x&#43;PRm5qaxEnKfkDlo6ioSB83bpyenZ2NsVjsn/U2OztbvvvuuxIAzClTphiVlZUcVpEFIMMw/YWIsKOjo8Hn8z0DANfZUheIM4UQ5wPAI6cgfVcg4tm9iT8i6pBSPqTreqoPZIhVq1bZvvgUdVaipKTEHQwGR7lcrkIAGAsA4xBxFACMUkIAEZUg9GRmZrZbvgoPBAKBXeXl5W8R0W7TNHcdPHiwuQ8ufnDVqlWYJHtgUVGRZ&#43;rUqYUej2c0EaUjooD/c63RbBjGvldeeWV3fX29kQyhNGLEiHS32z2GiHKFEPlqzKFpWpaUMlNpD0sgIREdDgQCx4joUHl5&#43;W4hxD6Vllgs1jh69OjO0yxKlOD35ubmFrjd7nEAcJYqf8MwCjIyMvzdy15KaVhlv6e8vHwXIu4xDGP/gQMH9k&#43;ZMiV2qvKxatUq0dLS4kkkEnlCiAJN03IRcYzlUingdrtHejye9wW4aZqdhYWFh4joWGtr6&#43;6VK1fuNQyjUQix5/nnn29JRl1Q6enps127dmlKQPehnejzimllZSU5XXFVbblpmprd51rPcDQASIrvrV03zTwHNPE4oBjNXbDTHlHu1QzzxjEPvPjsiT7&#43;yZaPfARA&#43;w0AFLCxHBt3WwI6532j&#43;KVdgzUHqlMrLCysFUIs7K0BsQ5NPPj6669/YdKkSfM1TavpCix&#43;su9Yv3&#43;6Z8&#43;e0lT6BLz11luzMzIy/gcRe11yllK&#43;0traeoPf78/Wdf0hRBxts9HcFYvF5q1fv75Xh80lJSXezMzMGzRNm2hnyRwAYoZh/LqmpuatVNgnHA77fT7fRACYI4S4EhHVv/MRMcMSLdiLkFd5UILgECK&#43;ZxjGM4j4J0R8saqqal9vnUNRUZF&#43;wQUXXE9EU&#43;3YAxGjHR0dkQ0bNhwfHguXLFky1uVyXa3KGhGnKfFKRGnHCcBjiLibiL67evXqB/toNi0cDhf4fL4ZiPgxIcQsy7dkjhDC39WR9mIzhRKDBxBRCei/SSmfME1zW01NTcspfN1FRUXFWWqQJIT4OABMIaIxKh92yt4qs6MAcAAA3iWiJ03T3IqIr1mn25PO4sWLs3w&#43;3yRrYHepJVbzrOg&#43;wmadjas0E9FeInreNM3HiKihpqZmnxV&#43;0RGLFi1SYvOzQojMHtoITQgxFxEvtNmmGIi4RUr5TJ8V/Qflc6YQosTuxBsRvQkA/0tEdtxQCUR8fvXq1VuUxuYZQIYZpowcORINw3hcCLEDEc/rpWHqaqAvz8/PPxsAdqQqXWlpaRcBwEdsNHyEiI9s3Lhx17Jly7JTaCqvEOJziPgJRLTT0bQg4isAkFQBWFZWlqvruhJ8n0HES1QREpHr&#43;AMyNmZN1TVuRCyw9naqDm4BEe2oqKh4FBE3rV69emdP3z///PNdRBQCgJuEEHY6kcOapv0DAHZ3FwQejyeEiF8SQkwjIk9XPrqn3xKCOapaIGKhU5vNnz8/kJ2dPQsRP61p2uVEdDYi&#43;pQg7HpWl4PxXuzW9WEWImZZcVqvEUI0IeJzFRUVkfb29kfr6ur2p2p51VrineR2uz9PRDcIIcZ32a0r7Tb8pHddO8L6mYqISoArYXv3vHnzKjdv3hxNllAtLS09y&#43;PxfAIA5gLAuYiYbc1MHv8eo41JKDVIPQMR1c/FiPhF1Q6tWLHiYdM0H&#43;jo6NjuZGuD2&#43;0eqWlaOSKOO1kenAwyiGiuEKK4n3ZDO1tfuhWoEtP/z871StQS0V2hUOhRJ4N4FoAMM8TIzs7G559/fveMGTP&#43;oGnadJtRNtTo9GoA2JmKjq64uNgjhFBCy46gO2Ca5kOp3s&#43;UmZkJQgjVIAvVMNtoZHV1ebKev2DBgrTMzMxriKhECDGHiLLsir1exHz3WQElsC4golkq/apD6a2zU3m0ru210&#43;lujxUrVowhom8i4s3d4jtTb2LfSTmrejRx4sQZQgglEuZa4lF0E3wns4ddO6q8j0LE64joskAg8PTKlSt/3tra&#43;se6urqknkgPh8MZfr//JkRcTERTu0RUMgLjWPV1hJRycn5&#43;visJycUVK1Yoe6tBwr9ZoSS9DuqjnTR3uaeaBQDnaZp2YyAQiFRUVNxXVVX1lp26IqVEayCQFH1j5UNLwn0cC227QlUIAaZpan15AMMwQwxrH80jAHDQ5lc8iDivpKQkIxXpGT9&#43;/EQiutrm5U93dHS8NISLRyxdunRyRkbGdwDgDiWMASAr2YK3eweshJoQIpiqDC1atKgAAP5LCLGgm/hLaszTRYsWjZw8efIiTdN&#43;johfFkKM7b6NKYnP6n7PdCHENQCwNhAIfHfZsmUTkrV1qqysrDAQCKwSQvxQCDHj&#43;Bm0JJZ/v&#43;tVSUmJt7y8XA1W7kTE7yHiR3rbXtLfOqsGGIg4BRHVoKJuxYoVxWVlZR5u3ZPYELEJGGZocvjw4ReJ6Gmb&#43;7nUr/MzMzOnpyItLpfr46rDtpGWOCL&#43;IdkzLQOFUCiklZeXX&#43;52u&#43;9AxKWIOCIVYqmH2ZWkz6gKIaisrCzd7/d/AxFvBoCUHNlesWLFRK/X&#43;2NE/G9EnHyqbNbNbiMQcbHL5VJC5BJVjv255&#43;LFi89yuVw/EUKUIWJmKsomWSxYsCAtKyvrS0KIOkQsToXwO5kYVMIYEa8EgDpd17&#43;k0sOtOwtAhmFOwv33399imuYDANBpt5PTNG1uOBxO6kzELbfckmt1HO7eOmwieouItg7V9nbs2LHXCCHuAIDLuw5EDGZUHjRNuwEASlIl/pYuXXqB6vyFEF/oEh&#43;nQvidQIio8roCAO4cPXr05X2dCVy5cuUIr9f7HUQMEZF2qvPjhJtvvjkrIyPjNiHE960Z19MiVK3l/QI1AEhPT18WCoWC3MKzAGQY5iQkEoknAeA1u50cERX7/f4xyUxDZmbmHGtPj51GfvPu3bt3DcW2duXKldcT0VpEnGjZGwe5&#43;FNi4GwhRDkABFLxiCVLllzidrtruwTzaRZKXUJwmq7r65YvX/4xpzcoLi72ENEKRPy0tXdxwNaBcDg8YtSoUf&#43;FiGWIGLR5qCPVIjwohPh6YWHhV8PhsJ9beBaADMP0wOHDh/cBwB8BwLDTyCLiJES8LFnPD4VCPgD4DACk2VjmOmwYxh8jkchQi/yBFRUV1xDRDxHx7KGSKWuP1vUAMD0VwmDJkiVTPB7PjwHggoEklCwhNEUI8f2ysrKZTr47ceLEKwBgASJ6BvKybygUCvr9/q8gokqr73SKvxPYPoiI5YFAYEFRUREfZGUByDDMiYhEImYikdhMRI02R9oeRLzu85//fHoynl9QUHAOAMzpLe6v5cPwGQB4caiVQUVFhRIL/4GIE/vbkRKRSUTtAHCUiA6qH&#43;vfHX3xmdYvVfuBf8Krkn14QVFeXj7K4/F8GwAu7qe9uvzMtVo&#43;8o5a9jP6kW&#43;0lkIvcLlc3ygrK8u18z31Tln&#43;PEc6qQdEJImomYh2SimflFL&#43;xvqpJ6Jt6t0morZklf&#43;sWbNcY8eO/TchxJcQ0d&#43;fOmvV16hKv2X7FiKK9VX8ouVQT9U9RKyYOXPmFYN9Jv10wuqZYYY4&#43;/fvf2XMmDF/BYDP2fzKpTk5OdMA4O/9ea4anSPiPCsiQ2/EAOA31dXVQ&#43;rwRzgcViLpq0R0keq7nHak3QSMEnvbEfF10zTfQcRDANAEHxzEyJFS5gshzgKAqQAwCQAyUyHMju8/TrY0aKVdWmLLtPbQ6dbMYY92sOJFfxEAPomIWl9EhxJ8RPQ2AGwnoneIaL&#43;maUpEKQGRAwCFAHAmAEyxIq34HZYNWq5n5um6/o&#43;ioqLq3iJYjBw58jz1WjgQfsquSjg9as3iPx2LxVra29s7MzPf93Hs0XXdaxjGGYh4nhDiQlXPhBCFROTtq2ibPXv2LCnl14QQ2U7Fn3V9pzXgfI2I3iCifVZ9VeXis&#43;rqWCKarOqqEnNEpDvwj9clAlV9/1o4HN5WV1f3zwGuruuqHFRZHznJPQJ2D7NY9ThqZy91L7gsv5d27ane&#43;zabYlm9J20sABmG&#43;RCRSKSjvLz8d5qmzUNEOyfo8nRdv7q/AnD69Ol5APAJm43729FodOtAjsnaB4TP5/uMEOJTfQgDRZZw2kFEv5VS/r6tre2tu&#43;66q&#43;lkfWNpaekot9s9DRFvBICPI&#43;LY3gRXfzn&#43;3lbaOxBxJxG9SkRvAcBRKWVQCFFAROMAYLzl/Pdf&#43;reCgoKPCCEWdy2TOhFM1kzf46Zp/q9hGE8fPHiwsactBeFw2K/r&#43;hkej&#43;dKIcQXiOh8OweVjsu7T93q3HPPfbS&#43;vv6Vk4hajYjmCCFGODDtUcMwVrW2tm66&#43;&#43;67W09y3bsAsLWkpMSbnZ09Xkqpyv1GIprhdG/m4sWLs3RdL&#43;/aquDQ9gYibiOiXwDAI7t3794ViUR6GtCJpUuXqnZmJiJ&#43;DhGvVcLc7vO6rtM07bJAIPDZUCi0rssB8tGjR9/Jzs6ej4juHr6rBiFfFUKEbE5EJoioxjCMB1yuvo2pTNNU9fgCTdPWOzgs1SCl/H&#43;I2Gbj/iilPByJRBIsABmG&#43;RAdHR1bg8Gg6qBm22hchZSyeNGiRRvvuOOOvX0e7rpclxLRFBttugSA&#43;qampreHks2XLFlytqZpZUSkRLcTIaN&#43;HQaAezs6Ouo2bNjwps3wTlRbW7sfAPbPmjWrfs6cOedomjYfAG4GgPxTlG0lWp8DgA2JROKJtWvX7j0&#43;7Up4uVyuQrfbrepHSAjxz5kVa5l0ESKe0Qfx9zoA/KC5ufk3vQim96mrq4sCwHb1s2jRot/5fL4wIi4CgJEO8zze4/HcHAqFVvUkNs844wyvlHK2NXtlxymwJKKfNTc3b9y0aZOtmSfrum0A8NrChQvvS0tL&#43;zgALCIi28vdbrf7OkSc14cBQ4tKQkdHR01tba0dh81y3bp1&#43;wBgXzgc/ovX671W1/WvA8AFdgdLVpl7ELFkxIgRD6lB5HF2gB6EvysYDB52IPJV&#43;/ReTU3NC/15McrLy9OdLNMTUUt7e/vLqXSJxXsAGWYYYC2R/NFaHrPT6E31er2X9/V5qiMnos92xWPtpaFrklL&#43;KpVxiE81oVDI7Xa7S5QdVV/qUMi8RkRLd&#43;/efduGDRt2OInt&#43;c&#43;pg4aGRHV19cvbt2&#43;/LZFI/JuU8kEiiqYyz9Zer5/G4/GbV69efc/atWvfO1HalfBav379zqqqqp8JIf49Fott7vps5MiRVwJAscPZJ9WpPmma5i1paWn32RF/x6MGOoZhfB8AVhLRuw7yTFaosM/m5eVN7em6aDSqBgHjwGZECPVOENFv7Iq/47&#43;&#43;cePGA1VVVfe0t7d/zjTNDYFAoNeDVaWlpXmapn3RisRhO/9EdICIvt7c3HxbbW3tm05n8VV9WLt27W8Nw7hVSvmwgzaqa1/xNI/H88lVq1axnnEIzwAyzDAhFott8Xg8C7s6ol4a16AQ4hMVFRW/raqq6nD6rMzMzBmIONvm5c8Q0fNDydY5OTkTAeDT1p43WzNZ1szQS0S0oqqq6olkLIdv2bIlpsRRaWnpG7quj0ih&#43;Ish4p2tra3fr6ursz27cvvtt//z2vnz5weUdkbEHAc2UzZ6yTTNr1RXVz/bnzzU1NTEioqKfnn&#43;&#43;edrAPAjAMjtNZDw/7lPOtPlcn181apVL1VWVsoTpDMDAHwOknNYSnmwv8Vy55137gIAW26VPB7PRxHxQofPaAGAHzQ1Nf28j2L1n2ldu3btqxUVFV&#43;zPAbMsVv&#43;lqPoTzU2Nv4CABq5pbcPK2aGGSa43e7tRPSYg69cLKWc5PQ5RUVFutfrLQaAPDvCgYi2VFdXNw8hU6PP57vWyT4qS8jsNU3zO6tXr34i2Xsha2tr96sONkXiTwmex2Ox2E&#43;ciL/jycjIOAcALgNnjpEPSSm/X11d/Vwy8lJfX2/s2bPnASLahIimzfx3idW5e/fuPeGJYE3THPl9JCJfIpHwnaoKO2/ePD8AfEKJLwdfM6SUkQMHDtzdT/H3T6qqqraZpvk9u0Ku24GQc30&#43;30XcyrMAZBjmxI1rh5TyISI6ZrNxLUDEa5y2E9OnTz9DSnmdzT78LdM0HxlKdi4rKxuBiJ9ARM2Bu4tOIlq3d&#43;/ezYPwIMwBwzB&#43;Yu3p6jO6rl&#43;NiKMd2EwS0e/27t37h2TaLBKJdMTj8Y1EtN2JCAGAycFgcGpSRhCII30&#43;34RTVYDjxo0brwZ8DoX/G4ZhrLv//vtbkpmW5ubmeinlAw6XgtMR8dL&#43;huhjAcgwzJClvb39HwDwss1O1o2I82655ZYcR42KEFcJISbYeQYR/amzs3NIRf5AxOkAMNWhC42G9vb2TYPNCbZVxo83NjY&#43;3Z/7hEKhoOrAreU8u3v/GqWUdynBlux8HTx4UA1Mfm3XX6CV5hzrEMO/EI/HE3YFjWVTLwDMX7Ro0chTUY5ut/tiIUSeXfFt5eVX69ateznZadm0aZMaDP0PAOx32O5cGAwGs7mVZwHIMMwJKCgoOAQAv7Z7sECJmezs7Avs3r&#43;kpCRTCPEJ1YHZiPt7mIg219XVJYZUoyrEHAAY4UDItJmmeVddXd3&#43;QZjdVtM0I/0VYaNGjSpExMkOxWd9U1NTSpa1I5GIKYTYbDnatlvuqshnWnsZP4SmaU2WTz9bYtKqOx/3&#43;XzfW7FixZhUFmAoFNKklLMd&#43;g7cZ5rmQ6mard63b9&#43;riPgPh1&#43;bkJaWNpZbeRaADMOcgMrKShmLxf5ERLtsdkZppmneUFRUZMtpamZm5kWIaHcp6blYLNYwlOxbVlaWrkSAEMKJkHmltbX10UHqA/EdwzBe6u9NXC7XBCIa7cBmSnA&#43;eu&#43;997anKmPHjh3bQUQvOUiTel8mZmRkZBz/WTQa7ZBSOrkXIaJHCPHvRHTPihUrbrrllltyU5FPv9&#43;fq8S3A0fM6tff9&#43;3btz1VtlcDCinln&#43;w6X7ZmLtOUCORWngUgwzA98Pbbb78JAI/Z9EklEPGj06dPP6u3C2fNmuUSQnwSEbNsLCXFieh3GzZsaB5i5lWd6VS729ispbQn77777kF3etGKhLG9ra3tQH/7ISu2rtvB/r/DiUQipWEDLXcyr1qHXOwyWgjxL8uQmzZt6hRCPEVECZu27VJjbiHEFQBQm5WVdWdFRcVnly9fPjqZe92ys7NVnS2we72UUhVTQyQSaUul/aWUDVaIO7v28muadja38CwAGYbpgS1btsQMw3jQis9pp3Ed53K5inq77pJLLhkPAFdaHXpvy7&#43;7iKh&#43;iEX&#43;AE3TzgCAEXaFDCK2EdGgjIBiZfHt/p4ALSoqEkR0jsOIJXuJaE&#43;q8yilfNVJCDBE9CLi6B7u9RQAvNMHOxMiZiPijYhYJ4T4&#43;ZgxYxaWl5dPKikp8SYhmyq9TlwEtUgpd6Ta9h0dHQeclLH4gNHcwrMAZBjmJBw7duwFAHjBZufjIqLrFi9enHWytsTlcl0rhDjTTr9KRI/t2LHj7aFmV0Q804pOYFfINEkpdw7S7HZKKd/r7038fr8GAAUOo0&#43;8nkgkOk6ByH3bislq93oXIp7w4MaTTz75ppTy93YPlnSrU93tkm6dzF&#43;radqD2dnZ/7Vs2bLZJ9p3aPf2RFTo0Cdwi2ma76ba9rFYrAUAGp1UCylldpJEMQtAhmGGJvfcc88RInqIiGJ2Oh9EvEjX9Vk9XVdWVpaDiJ8iIreNTrIZEX9tOSkeahRYQd/tCobd8Xj82GDMqLWc2dTf&#43;&#43;Tl5aUrYePkO6Zp7tuxY0fKT0wLIY44mQEEALeU8oSzaQ0NDQnTNO9wsq/wRO&#43;jNShT79kURPyKrusP5ubm1q5YseJKy5&#43;fbUKh0PuzZg7Fd3s8Hj&#43;YattHo9FoH&#43;pXpt/v93ELzwKQYZiTd6J/BIA3bXY8I3Rdn1tUVHTCmQJd1y9GxPNs9iMNHR0dzw9FmyJiHiLqNq8FKeWB9vb29kGa3TgRHe7vTfx&#43;v99JlAxlNyHEwfr6eiPVGTQMo9OJCEFEoWlaj7NxNTU1bxFRJRG9a3&#43;7Y4&#43;Dsi5UnfsCAPxy0qRJ68rLyz&#43;yatUqW3Xw4MGDSlBmKE1p9/lSyoOxWCzls6&#43;RSCSOiEcd2san6zpHOGMByDDMyWhsbHwbAB5xsF/tqvPOO&#43;9flnjnz58fQMTPEJGdWZxOKeVQPPzxPkTkdzKZIoRoP3z4sDFIsysBoN8ufIQQqv74HXb0racig5qmUbL3Zz7//PNbpJTfAoC3qa8q8F/rnRKCI4moRNO0e1taWspuvfXWXn3iTZo0CZ24LLJsH01PT5en6H1ybJ9EIoHcurMAZBjm5CNsU0r5BwA4ZPMr4zVNu/z4P6anp08CgCKbIc/e0zTt8aF2&#43;AM&#43;WE7zIWK60&#43;9deOGFNJzroa7rjsKkwQezUIM2v/X19caTTz75ABGtIKJnlWbprxA8blZwEiL&#43;V3p6&#43;neWLFlyBusAhgueYZh/4ejRo88T0T9sdjJ&#43;IpobCoWC3f/s9XqvAYAxNsSf6rifeOKJJ94airbMzc3VnOz/Y4YvDQ0Niaqqqt8hYlhK&#43;UtEbE7SbGDXHsEgIn7Z7XZ/Z/HixWPY4gwLQIZhPsSmTZuaEbHXwyD/bDCEmJ2fn//PeKeLFi3KJ6IbENFOW3JUCPGQ6vyGoi39fr/jDlxKKZqamob9khUi0gDuu2yXD32A7cMpq1evfskwjKUAUAYAf7NiQidlNtByx3Szx&#43;P5VllZWXqybK/e9VgsNiDrLBElotGoyS07C0CGYWzQ2dn5FyLaYbPxHyGEuL6r7fB4PFcCwDSbj3ouFos9NVTt&#43;JOf/KQTAFoddqY5QohhfWoxGo22W5E9nJDrdNm4L5im6QWALCcCBBEPOXlGTU1Ny&#43;23335/PB6/yTRNJQT/TEStyRCCiKgJIT6v6/oXTmSvHTt2qMccc/IoIhoZCAS0VNs&#43;HA67nNjeyvPRpqamDm7VWQAyDGODbdu27QKA39rscHRELF62bFlhKBQKapo2DxGDNr4Xl1I&#43;tH79&#43;iND2JQmEbU76EjVr9FSyuBwrn&#43;IGAWADod2KyguLnanvIMUYgQA&#43;BwclIqbpnmoL89at27dvjVr1twVjUZvRsQvEtE9lsP0Ps&#43;Ydy0HA8CXSktLxx//&#43;ciRI9XnRxBROrhfejQazUm17WOxWAAAchzmt3nz5s1RbtVZADIMY4P6&#43;nrDNM1HiOiAzU5uIiJelJeXNxMALrfzHSnlO6ZpPj7UbUlEh5yEDkPEAk3TRg7n&#43;nfkyJFWIjrmUDSOO/vssz2nQJyeBQBuu6dkEbFTSrm3P1XojjvuOHj77bf/OhaLLZVS3iyl/AkRvUpEHU5nBbsdDjnH4/F84vhZwEgkIqWUBxwIXCSiNK/XW5Bq23s8nnQ1QLKbZSmlunAft&#43;gsABmGcUBjY&#43;PLAPBUbx2BtcfJj4if1jTtJgAYabPzUOLvraFuR0TcYzdyRNdsChHNGs517&#43;DBgwki2udE3CDihHg8np3yDlKIaUqL2L1eSrnfwan6k1JbW9u2Zs2ap1544YX/SCQSN0kpfwgAO/syI4iIHkQsDofDx&#43;8FVDbfjYimg3tlqkFgqm3v8/lGIWKhg69Eiegtbs1ZADIM44BIJNJORA/2FvWgy/OsEGKuEOJziKjZiPt7zDCMh2tqamJD3Y5E9Lrd5UzLbj4hRFFRUdGwDV91xRVXSAB43YkIUQOPQCAwLZXpsk67T1V13GZ5qvJ/IxqNJtVHYX19vVFTU/Pa3r17vyulvJmIHiCilj7caoLX6x1zgjq7V0p52IEAdCHieaFQyJ3iwdRMRAw6GBi0maa5g1tzFoAMwzjULm1tbfUAsM1m45yGiNk2BJFqvF9KJBL/GA5G1HX9HSI65LCju&#43;Tcc8&#43;dNFwrXmVlpSSiV5ycnkXETAAoCoVCKTuMkJ&#43;ffxYATHEg/lW6Xr777rtbUzRIM9esWfP8wYMHS4nodiJy&#43;pxRRJR//B/b29sPCCF2O7zXZaNGjSpIofh2q4EREXntLr8T0S6Px7OLm3IWgAzDOGTjxo37iOiPToPV94K614OjRo06PBxs&#43;O677x4iopedRANBxLGappWUlZV5hnH1ewMRne6duzovL29cigSIpmnadYhY4EAAHgGAZ1JtqPvvv7/l8OHDSgBuICLDZtoIEV1CiPzj9wFu3LjxsGma2x0uwY/XNO2qVOVx5MiR0wBgtsP36Klnn322iVtyFoAMwzhHmqb5eyLam6wbqlF5IpF4rLKyUg4HA0YikTZEfFJK6WSflq7rulIclw3XitfU1LSHiLY5&#43;Q4inqNp2hd6ik/dH3Jzc88EgJuUaHJQ13fGYrGXT4W97r333nbDMDYBwC6btupSUieaMTWJ6EknJ7ER0S&#43;E&#43;PzChQsLk5234uJij8fj&#43;ZyT/X9E1Gqa5l9PRXzoU0iGaZoaC0CGYU4Jb7/99nYi&#43;muyBCUA1L/55pvDamN2IpFQneluh0K5QAjx9SVLlqRqcz2mQiglU9AQ0eNE1Onga24hxPzp06dfksy0lJSUeN1u9&#43;cdLv8SIj62bdu2nma6RbLtb5rmewDwWpIGan8jIkd1VghxUSAQWKgEWzLzNXny5AsBIKQGRg7S/0ZHR8ezQ6wpyfX7/VksABmGOSVs3rw5aprmH506ND6h&#43;pOyBRF/s2XLlthwsmEsFtshpXzCkTr7YIbmCo/Hs6q8vDypy5qzZs1yLV26dPasWbOuGch2i8fjfyGid52ILgA4S9f125YuXXpmsvrE7Ozsq4UQYUR0OVgW3Sel3NLTDNTSpUvzZs6cGQqHw6OT1e96PB7TWna2bTI1PjlRHG4iUmLS6cDPq2laeOLEifOSJW7D4fBYIcRXAWCsg3ogEfH3O3bsGNAuYAzDSDjZ5woAIxBxGgtAhmFOGZ2dnX&#43;RUvZ7KQsRX4lGo88NN/vV1dVFAeDXUsrmPrTHNwkhfrxkyZKpSYh0gaWlpXlXXHFFqcfjuRcA5g5ku7366qs7AOBhJz7pLD7qdrt/vHjx4rP6mQStrKzso4j4PQDIhw8vnfYy1pF/OnLkyMnemXQhxG3BYHBjRUXFNcfF0&#43;7rAMtjJwZ3dw2i63rjiT6wTuj/yskBJquc8jRN&#43;&#43;GMGTPmqoFGf/JTUVFREAwGVxFRscOv7kokEr8f6Mu/lh/HVgftZ4amaVdaEVFYADIMc0oETKMVH7g/&#43;/bUSPcPd9xxx8HhaMNDhw49CQAPOXQKjZZbnU&#43;53e77ysvLS8Lh8Ii&#43;CL9FixYVLF&#43;&#43;/Fav1xshoh8g4plENKBjDlsd&#43;H1297XB/y296gBwg9frvWvlypXXVlRUOA6tt3jx4qzly5eHXS7XnQAwzcnhAyLabxjGxnvvvbe3KDBeAChGxHvHjBmzceXKlcXquf0QgBci4nQH1x&#43;KRqM9Ons/fPjwk4j4sMP6qgx1lqZp6y677LKK5cuXj3aaDyUcy8rKLiOinwLAfFWeDk7&#43;JqSUv9i/f/&#43;2gd4maJqmxJ/TQeGn/X7/VTYGgyIUCvmcDhp17u4YhvkX9RaPP&#43;xyucJWJIS&#43;jHZ3WyeKhyX3339/S0VFxToAuISIznZ4mlEg4gxErA4GgzcvX778d4Zh/DUej&#43;&#43;tq6trsvZWfohwOOxyu925uq6fKYS4FhFVp6HEQaDbfWmg2629vf2lQCBwLwB80xJ2vYqQbiKwCAAmA8Bj5eXlD&#43;q6/sLhw4cPbNq06YT7CpVQJKLRQojZRPRviHg5IqadaIn0ZK&#43;KaZo/P3DgwLN2RRMAjCCizxLRx3w&#43;X0N5efnDUsr6lpaWdzZt2tSrQCgrK/MIIS7SNO3bVkxku&#43;/kjmg0&#43;l5PnysBW15evlHTtCJEHOtoxIE4RtO0Sinl3OXLlz&#43;IiE&#43;0t7e/V1dX13IiexYVFekTJkzIycjImEREnwaATwLAGHTyonxAg2EYd0UikfhAr9stLS1HsrOz1YB4qoPBTSEi/mjFihW5nZ2dj9bW1h7s/v6XlJR4c3JyxiLiterycDi8oa6uLsECkGGYPnPgwIGdhYWFf1aj&#43;z4KwD&#43;//vrrO4ezDZ9//vnnZ8yYUatp2n8CQLpD&#43;70fJQQArhZCzPF4PPtcLtdrK1eu3GkYxiFVRJqmdZimqcTAKGvP1BQhhBJAI7vadus&#43;OFhspjqvsrKye3RdV2LucjtpP&#43;6aPET8vK7r1wHA6zk5Oa&#43;tWLHiXWtps9mySRYi5gohxhHRNACYJIRId2ovawn0b52dnT/tiwBBxBEAcK3KKxE1ZmdnP7ty5coXpJTbE4nELl3XWxExZpqmpmma2zCMEbquq/fxEiFEMRGd5SCtMUT806ZNm04acm/fvn1PFxQUbBRCfAsRPQ5ErcIrhFDldiEA7ElLS3th&#43;fLl7yDiASnlISGEIaX0apo2wlq6nkhE51plpjkU3ipPB0zTXL1u3bpB4ftPifuKioo3iOhKO8XWZVerjlZ7PJ5nli9f3kBE7yJii7VHcIo1yFTv/S&#43;OHj3KM4AMw/SPSCTSsWLFioeI6CZrVsRJw6w62j8Mt8Mfx1NfX29MmTLl516v9zwAuNmJS5HjOnYvAIzXNO39YP6appkA0ImIhlIGVsfbJfi6RMyJ7jMoqKmpeauiouL7AHAmEY1xEIe3&#43;3VZllC6REpJQojOrhBqQgg3EXm6X98l/Bza641EIvH9O&#43;&#43;8c1cfxN&#43;HyhcRzxRCnCml/LQQosXtdrcBQBQADum6rso/2&#43;12e4kordv76EQwvR2Px//Y23eUkA2HwxuDweBMIrrebhSU4/ABwAREnKCqp7K7ruvK/qTrurqfp2t297jtnuigjemQUm588cUXH3IqHE8zfweALwCA30mTioiZQohriOgaAOiw6rKnS6Sr6mSapmM78B5AhmFOSDQafZqInncagB4AXm5tbX2aLQiwYcOGo7FY7LsAsJWIzL7co9tMQFe0CQ0RAwCQgYhB1Zl2fTZYRd/xbN269S8A8KM&#43;7JmC44TdP0PuIWK6NavqtZaOexJkvYkPxX4i&#43;lFNTc2fk5XnrrK1xGshIk5CxDmIeIG1FSO/&#43;2DMQZrVYOG&#43;gwcPvm7n4rq6ukYAqASAF0&#43;03cBJfqx0qoFPmmV7VW8/VF/7QJyIfmWaZnV9fX3nYKrXsVjsbwDwXl/f/y6BbdXlfrvfYQHIMMwJGTVq1GFE/LXDyCCqw/jdxo0bD7AFP6C2tvZNwzCWE1F9Pw/WDBsaGhoSbW1tPyOi1UR0bKCkyxoMHZJSfnvr1q339Ecg2RWx/U0vET3c3t6&#43;MRKJ2B6ArF69&#43;uVEIrFSSvkq9UOppcD&#43;CSnlAy6X6&#43;s1NTWHBlu93rZt2y4iemygpIcFIMMwJ6SysvJ99xZEtMtBZ6OufZyt92HWrl37qmEYZZabkwRbpHcsdzq3A8B3iejAABF/75mm&#43;dW9e/feo0TqQLafGmwQ0V8Mw/h2H07jU01NzVbTNJcAwD/6OnudTKSUUSJSg4Kv/ehHP9o3GOt0fX29YZrmz4loJwtAhmEGNHv37n2LiP7sYKbjiYHSuA00ampqXkskEsuklHcT0bGBNLMyUKmqquo4cuTIOillhZTy5dMoRAwiekpKubijo&#43;MXA/3UqTXIeEzZTQ0&#43;&#43;nqbtWvX/s00zS8TUYSIoqejzloDy32I&#43;P329vZvrVmzpnEw1&#43;nGxsYXiahmIMxsswBkGKZHVEeHiL8mIjtB1lsNw/i96rTZcj2KwLdisdg3AOBbRPSq3WD&#43;ScIcjDbbtGlT55o1a/4XAL6EiA8S0dFTKESkNfu4MR6Ph9esWbPFiZuN0ySW1ODif&#43;LxeHl1dXV/HbqTukcsFqsgov8GgLcdbgnpb36U6KyXUpZt3779J3V1dYeHQJtqtre330tEG4mo/XQOBFkAMgxzUpqamp4houdsNNavGIbxD7bYydmwYcPR1atXbwCABdaS1l4iSqSoI5BKmJum&#43;aRpmoN5aV5WVVU9c&#43;jQoVJE/BoAPGmFK5QpEh6mGvRIKR8BgCUHDx78yvr16/vsbDgejyes0/HxVJSzdc8OInqBiL7Z2dlZsW7duteTdf/a2tr9W7du/aFpmgsA4H5VZ1MlBK28dKoBEgB8PxqN3rJmzZpfDyWvAnV1dcfi8fh/E1ENABw&#43;XSKQ3cAwzCDo/FSHhIgn7ewsn7gyBTMwzcuXL98MAJcBQE8nz1RnsDk3NzepkT&#43;EEGTl3VZng4im&#43;o6da5ubmyEnJ0daIkLaubeUkpIoaJ4LhULb8vPz79N1/SYi&#43;igRnWnFoMW&#43;HASw3JmQlZ/DUsoG0zQfVEJm3bp1dvZNSZVHlddk2jpZ3HPPPUcAYGNpaelmj8dTjIifAoBZiJhLRBr08QBFl92sGdndiNiQSCR&#43;2dzcvNV6Zr84evTobr/fv0xKeSMAzLHcpKSrKt7PslZtQwcAvCql/J1hGJGampq3U&#43;EapaGhIdHQ0LB13rx5z40fP/5CIUQIEa8EAFVn3X3NRzfRp&#43;rsUQDYRkSbTdN8qLq6&#43;o0UiXzb9dwaDCTdnuvXrz8yb96870yaNOllKWUZAMywTvYKp/VW5UVK2ZKVlUUsABlmiBCJROTy5cvvI6Jn7YTyQsR39u7dm/T9SbquRxKJxLGTCMCEaZqPVVZWJrWxbmpqejc7O/trUkq/lNKOYGxtaWmxtUE8Go1GR4wYsd40zc12GnhEjEej0VeTXL6q894aDoefCgQCZyDiTNM0P4aI5yHiaCllDiIGTtaxWp1AGxGpzvOglHI7Iv7NMIznDMPYUVtb22YnLXv27IkXFBTUAcBjNu3R2dbW9ubpeC9qa2v3A8DPSktLIx6PZzIRXSqEmG05F1ZiMFsI4bMhOlpVNQOA/UT0CiI&#43;GYvFnm1tbd3VUwSRPpazeif/BgBPLVy4MDc9PX28aZrnAcDFiDjJiuiR3SUKexkMtiDiQUTco9oFVX9M02yorq4&#43;eCp84m3evDkKAE8UFRX9dfr06WcIIc4XQlyOiDOIaLTloDitNyFDRDHL9ocB4C1lGwD4aywW27F&#43;/fqmVOWlrq7OXLZs2f8IIV60KexMXdefTpUtN2/e/MtFixZt9fv9VxLRXCUEAWC05eYJe7Bd3BLL&#43;6WUSjA/DgB/dro9ISlHzXfdNPMc0MTjgGI0d9lOhz5yr2aYN4554MUThhL6yZaPfARA&#43;w0AFLCxHBt3WwI6532j&#43;KVdQyAzdt9VOo1poNOc976mA1N4b8eEQiF3VlZWusfjGaPr&#43;igp5UhEHCGECBBRjuXDLkFESgTEhBBK9B0hosPxeHzfO&#43;&#43;8c3TLli3xfqR1QNnDDqtWrRK7du1y&#43;3y&#43;HI/Hk4&#43;II4UQOUoMIqJXiRJLkMSllIc0TYtJKQ8oAZJIJA4g4r79&#43;/cfi0QiiVOYJywuLnafddZZQUTMF0J0lbMSg&#43;pvudYkTdxaJmxXAp&#43;ImgzD2BOPxxtHjx7dXllZaZxu&#43;4fDYVcgEFCib7QSgYiYTUSjLKfQ74txa6ZKib0ORDxqmuZhKaWqw/saGxsPqXw6cVVzituVU1EnMBQKefPy8lT9HYeIBao&#43;aJqWRUTp6p1HxEOmaTYDwAHr3&#43;8CwKGampo&#43;ve8sAFkAsgBkmIGPKCoqEtOnT9daWlrw4MGDdOGFFyYqKytpkEVCOOV2C4VCmJeXpyu7RaNROWXKFGOg2y0UCmknSLMchINWJWp0v9///mzgrl27jPr6epmqvZtDsf7OmjVLmzZtmqbe&#43;WAwaCRTJLMAZAHIApBhGIZhhpu6ZBMwDMMwDMOwAGQYhmEYhmFYADIMwzAMwzAsABmGYRiGYZhBSVL8AJI0JAhXJyJ1skkd0ylR9niqR32GJJRd2bYOQAAkgE4zKviEJMMwDMOkQgCK6LGDlDbidpBmJpvUqXrGZreM7u7pY0Oau3XSq1AQ29aJWUGANIx9Lc3RJrYGwzAMwzAMwzAMwzDDGt4DyDAMwzAMwwKQYRiGYRiGYQHIMAzDMAzDsABkGIZhGIZhWAAyDMMwDMMwgwA9aXciQjZnH0Gkk5sW2LZ9Ni2wH0CGYRiGOb5/TMZNiu47Uug2E/8tBGZJ7m6dWv9IzEh8d&#43;sthW&#43;c6JKWRy&#43;fICTeBgJy2GD2EQAgAd5r7&#43;ysHHX9Pw6wRRiGYRjm/0jKDKBLxtNAiKsBxSiBrAAdQdSoC319jx9LygLEqzUUo9lYDrS1EtdSbvd4PT9mazAMwzBMCgTg&#43;x0ugXx/zoVxqP9AoqSeVTMhAYLkmVXH9RGU3TwGj0gYhmEY5nj4EAjDMAzDMAwLQIZhGIZhGIYFIMMwDMMwDMMCkGEYhmEYhmEByDAMwzAMwwwCdDYBwwxPKioqfPF43O941ChEW01NTYwtyDAMwwKQYZjBhQCAW91u91wnX0JEU0r5AADcB8BRVhiGYVgAMgwzaFi6dGkeIs4XQlxI5EzHIaK3pKTkoU2bNjWzJRmGYQbvLADDMMPtxRfiIgCY4lT8WQJwRmZm5gy2IsMwDAtAhmEGCSUlJV5N025ERD/1RQECZAkh5oXDYRdbk2EYhgUgwzCDgNzc3LOFELPV&#43;4/4ftRkRyCihohXuVyufLYmwzAMC0CGYQY&#43;KKW8DADO6Od9Juq6fjGbk2EYhgUgwzADnJKSkgwiup6ItL7eg4gIEX2aps0Nh8N&#43;tirDMAwLQIZhBjAZGRkzEXFWX5Z&#43;u&#43;j6LiJe5vP5JrJVGYZhWAAyDDNACYfDLk3TPg4Auf29F33AWF3XP8aWZRiGYQHIMMwABRELhBDXICL07fDvh&#43;6l0KSUxWVlZblsXYZhGBaADMMMQAKBwBwimmDt4UuWqJyJiB9h6zIMw7AAZBhmgDFv3jw/EV2DiAFMlvr7gGxd168NhUIaW5lhGIYFIMMwA4gJEyaMB4DL7Fxr7e&#43;ztUZsLSdfkZ&#43;fP4atzDAMwwKQYZgBBCLOFULk27x2LwD82e4&#43;QUQ8WwhxJVuZYRiGBSDDMAOEJUuW5BDRNQDgtnO9lPJPpmneCQBHbQpAPwDMmz9/foCtzTAMwwKQYZgBgMvlmgkA59m5log6AeAxANhKRDvtPgMRLxoxYsQ5bG2GYRgWgAzDnGaKiop0RJwnhMjsbV&#43;f9fmueDz&#43;3L59&#43;w4j4qMO3MWMIqKr&#43;TAIwzAMC0CGYU4zkydPLgSAKwFAs3n6t14I8W4kEjFN0/wzABy28xxE1IUQc7OysrLY6gzDMAMfnU3AMEMXt9t9KSLaDdfWYZrmwzU1NbH3/9PR8WowGNxBRDl2xCMRTQsEAucDwKNseSYZzJo1yzVt2rSAz&#43;cLuFwuPHLkSHsikWiPRCLxZD8rFAq5MzIystxud5rL5fJ3TZCYpklCiKiUsv3AgQNHI5FIB5cMwwKQYZgBS2lpaVDX9U8BgMdy/nxSEYeIO3Vdf6Hr/0ePHj3q9/t/r2naRXbaCkTMIKJPlJWV1XeJyBSAZWVlZ&#43;m6njMQbS6lVGZ&#43;b82aNY3d/15eXj4KAMYKIdDOPYioae3atW&#43;p/yYrbYsXL87yer3j7a78SCmPVVdX77BTJkuXLh3ncrlsRYQxTdPs7Ox8s66u7tgJPhbLli0rBICZmqapwcskAMgkoqD6LC8vr1Wla8WKFW8i4n233357Q1/tMX/&#43;/EBmZuYZQohzhRCqjk9ERJWHDABQz3u/rDRNIwBoB4DWMWPGHKmoqHhPCPFyIpFo6Ozs3FlXV3dEjX&#43;4xWFYADIMMyBwuVxTEfEim7N3JgD8uaGhYW/X3yKRiLly5cq/ENEhRBxt87FXE9GZAPB6KvJUVlbmdrlc30TEG5WmHWg21zRNJ6L/BIDbP6RqhLgREb9jp83VdV2TUv4&#43;HA6H6&#43;rqoslKm9frnYOIdwKAz4aYRyHEn0Kh0L&#43;penCya1etWqW1trauRMSb7ZSJpmltPp9vAQD8qfsjy8vLlRj7NAB8GhGnAkAAETUrPd2/31VnDwKAUwGI4XA4LxAIFAHAdYh4IQDkK5sIIbTe9ryqdEgp1UUxXdePBoPBlyoqKuqllH/ct2/f66mYmWQYFoAMwzhBaJp2hQPh1ppIJB6pr683PvTH1tadwWDwZQAYbUc0AMCZQojLUyUAW1paMDs72w8AmUmOaJIcowsBhmF4TvCR&#43;lsGIrps2FH9JN2lDhGpZ2cIIfw2rw/aua6xsREDgYAfEVX&#43;7MwualZa3iccDrv8fn8RIv4/RFQi1WvHzlJKRweOrBnQqxGxBAAuVentlldbvs/VNareEZFHvVvqh4g&#43;iohfKCgo&#43;EVpaen/1tbWvp3MmVuGSVl7xSZgmKHHwoULc4moWL3jNqN6bBNCvHT8H&#43;vq6o4R0RYAiNnoHAkR3ZqmXRsOhzO4FJjeUOIvLS3tBiHEekS8yo7460s/t3Tp0nO9Xu8PAOBORJzbXfx1G7zYput669VyI&#43;JUIcR/er3euuXLlxeXlZV5uHQZFoAMw5xygsHgBUKI6Xb2/hGRSURPVldXH&#43;ihs3vCWm6z1Ski4iXBYJB9AjK9EggErpRS/tg6qJT0fXSzZs1yfeUrX7nO4/Hcg4hfsuMOqR9oiHilEOJOTdPC7BidYQHIMMwpJRwOuxDxWgDIsjmz0WQYxsM9fXjo0KE3ieg5O8&#43;2Otc8a/Zx2GGaJkkp27gW9tLxCEFlZWVTEPF7Qohx0IdZuN4IhUK&#43;OXPmLJFS3gkAM7oNUFKydaDb/QuEEN/Jycn5xoIFC9K4tBkWgAzDnBK8Xq/qUK&#43;y2WmpXw3RaPSVnq65995724noYSLqsNMJWly1YMGC/OFkd6V9iehx0zQf4lrYq1AO6Lq&#43;BBHPT8XMX2lpabCwsLBC07RvW/v06BTWA7L2Q5alp6cvVkKUS5xhAcgwTOpfaiGuRMRxdq6VUhpEVH/XXXc1new6wzC2EtEeB8mYmp6efvEwEn9KYLwjpfzeunXr3uFaeHJcLtcliHiD1QcldUaupKTE6/F4viiE&#43;AoiZtvZBpFMrEMiJIRIV2koKCj4ZLLzyDAsABmG&#43;RChUCiIiNcios&#43;mcNmPiE/0dt2BAwfeBYC/O0hKhhDiunA47Bompm8DgDUvvvjiX7kW9opGRJ9CxFEpmJkTWVlZcxHx6wCQ5VT8EVECAI6p94KIthPRNiLaBwBHiShmN73dloNzEfEry5Ytm8rFzrAAZBgmZRQWFk5GxIsczFY819bWtr236yKRSIeU8jEiard5X/XrUp/Pd1Yy85eenq46YAMRYwDQmewf1cn3wYWHAQC/aWtr23S8Gx3mhPgQ8QwA0JM9M7d06dJzhRDfBIACsLnfzxJ1cSJ6nYh&#43;KqVcZJpmcWdn5/WJROIGIvq4lLKEiH6sBkFE1GpXCFoCdKamaV8uKSnxctEzAwn2A8gwQ2hAR0TXCSFGOjj9&#43;3gPERn&#43;BSnlU5qmvQcA59gUgWcgYhEA7EzWPq/9&#43;/cbhYWFdaZppiTcnBBiLBEtRcQ8u98hohfj8fh/27XjcKeXekmWU/IjiHiAiAwiEogYJKJsy33LCZeNQ6FQ0O12LweArn2FaFOgqef8rLOz895Dhw7t7MHx9SsA8NDChQtHBYPBGxBxhRU5BO3klYg&#43;mZ2d/SsAqOcawLAAZBgmqSxYsCAPEYsBwGVnYgURdxmG8YTd&#43;7/55pt7Jk&#43;e/DginmNzVsWLiDeWlJQ8sGnTpuZk5NHqnJ&#43;0fpJtv7SMjIwfCSFGOBB/&#43;0zT/M66dete5xrYP6SUbYj4N0T8lZTyxZaWlv1ut9twu90opUxHxBFSyvOsOj7n&#43;Em4/Pz8T6n6Zne/nVVHnzUM4z927tz5xJYtW3r1dblx48YDAPDTZcuWvarrehURfcTOLCMiFgDAvxcXFz9t5zkMwwKQYRjbpKWlXYCIUxx0uE93dna&#43;bfd61XGdc845fyKif0fEdDszHwAwKzMzczoAbB3ItisqKtIzMzO/AACfs9suElEUANZ2dHRs4drXdywh9hYRrW5tbf31xo0bD55gxrgRAHYAwFOLFy/&#43;hdvtLiKi1q4Py8rKCoUQYQDIsLnvTwLA01LKr1RXVz/lNMlr1679e0VFxdcQ8Q4AmGxDACIRfeycc86ZvGXLlpe41JmBAO8BZJghQElJiVfTtOsBIGhnf5K1of0Rp7FmOzo6XiCiNx1shs8RQlw70A&#43;DzJw58yIAWIGIGTbzJqWUDyUSibvr6uoSXAP7Jf5eJ6IVe/furbNm2E5mf7lhw4aj1dXVv21sbOyavRa6rs8TQswC&#43;/v&#43;dhDRN9esWfNUX9NeVVX1VyJab8c9kkW&#43;aZpXcr/LsABkGCZpZGVlnQkAl3U54bPxlbellE87fY5pmu&#43;fGkZEu5vgVXKu0TQtb6DabtmyZWMR8TYAGK&#43;SbGPvJEkpXyWiH9TU1Bzi2td3EHGvlPK2qqqqP/Sw965Huq5fsmRJFiJ&#43;hoi8NutkVEq5vqqqqr/bCMzW1tbfAsA2m4MGXdO0q0tLS/1c8gwLQIZhkoKmaZcCwJk2L5dE9Mwbb7zxntPn1NXVJRDx4e7Lb7108EpMneN2uy8ciHYLh8N&#43;TdOWCiGustJqK3KKEOIH1dXVvJTXD4goIaW8JxqNPtSHk9fd6/4MADjfzriHPuDvnZ2dkf48s4s33nhjv5TycTsDIqt&#43;TdI0bSyXPsMCkGGYZIiYDCnl9YjostnxdgDAb/q6Gf3YsWMvE9Frdq9HxICmaXMrKioGWkQE9Pl8n0HEWwFAd7B0fpeU8repiGAxzATgdtM0f96fJfRwOOzSNK0YADJtfqWDiO6&#43;4447DiYjD/X19YYVK7vTZp5Ha5p2Bpc&#43;wwKQYZh&#43;EwgEZiDihQ463h2GYTT09XnHjh07jIiPWf7v7HJFIpGYOJDstnTp0tmapn3DbrQISyA&#43;nkgkqquqqjq45vVL/ClbPrh27do3&#43;3MfXddzAOAyB195XQiRVGfd0Wj0PeuQip3BkE8IMYEjgzAsABmG6RehUEiz4v6OtPkViYh/379/f2NfnxmJREzDMB4moiYHnf0Yl8v10YFit0WLFhV4PJ5vAMBkB9Eitkspv79u3bp9XPP6ByIesnzi9WsWVdO0CYg4zubBD0lEf29oaGhMZl40TVPvQZPd66WU40OhkItrAcMCkGGYPpOXlzcaEa&#43;yG1GBiI6ZprnZ6Yb742lvb3&#43;diF622dmjtTx99a233pp9um02f/78gN/vXwIAH1Nmsykemk3TXLNmzZq/c63rP1LKd5qbm1/r731cLtcEAMixeXkMEbcmO1pLZ2dnu90IOdb7MMbr9bIAZE477AeQYQYxmqZdDABTHHQ&#43;ryPiy/197l133dVUUVHxFyIqsrv3EBEvCAaD0wHgidM56M3Ozp4LAAsBwG5oLiUY7m9tbf0l7/tLDoi4ra2tra0/9ygqKtKJaIKmaZqU0s4SvhKAI8rLy69OZl6ISAMAJyd78zIzMzWuBQwLQIZh&#43;kRxcbGHiOb25pS5W0eleHLNmjXJWgJ7FACWAsBom51&#43;jqZp1yVj6a&#43;vlJeXTxNCfAsARjjY9/dUIpGouvvuu1u51iVNNL0ViUT6FRFj7NixHkQ8QxWRzWgc6Yj4Q6UXU5Alv813AK19gLz6xpx2uBIyzCBl6tSpE4QQRQ6&#43;ckhK&#43;YdkPd8wjJ0A8A8n7Q0RfXTJkiWnxQ1GaWlpnhBi1f9n7/yjo7iuO37vnZnd1WqRtDJRJMVgYmLHrX9QCfwrMV4c24kd47htsnH&#43;sKIe&#43;WQbCWQhhbh10lbVH256XBoEQra7PnAit3801qmTnJDgBufYxNCQODIODg62jyEGzC8JBBK7q2V23u0ZOqSECDMj7a52l/s5R2d1zu7Mm7nz5t3ve&#43;&#43;&#43;&#43;4joejf5Ep1Fwe9lMpnuvr6&#43;d6XGZQfH7Iemm4bF5/P5AWCO284PItr&#43;bhYiVubgz3CbHJ2ZdQDwS00QZhoZARSEIsWyrM8Q0Uc8OF6/pmltXV1dX85G&#43;Y6/&#43;5hH5391IBC4zRZW&#43;bRVc3NzwO/3tyLifY4QdbPw4yQArD506NA2qW3ZQymVtixr2ntDh0Ihw&#43;3iJ7cxstMUtm7LCGQymUoAOCK1QRABKAiCJ1pbW8MAcI/bkQRH8FQS0YPZvA5HBLKbtBbOCEmImR9YunTp9zZu3JjMk7kwHA4vRcSYLYLdOGtmziilvjc6Ovrs4ODgaalxWcW2Z3q6J0mlUv5QKFR0Psyue7quSxoYQQSgIAje8fl81yPin3kdnXA5S&#43;XZp3m5BqXUzfPnz78aAF7Ph606OjquJ6K/RcRatylfmHkIAJ4YGBg4IbWtYN&#43;BMCL6xBKCMDUkBlAQioxIJKI7U5lhzpGiy2mjQ1RHRHd0d3fnvP1pbW0NE9GjiNjgQfwdZuYnent7fyu1rXDRdV0THyYIIgAF4ZJhwYIF9UR0NyJq&#43;YhtyibOSmRbwD4wMjISzmVZ0WjUFwgE/hoA/sJu61za6jQz97/yyis/lJpW2FiWxcXYARIEEYCCIEwJn893CwBcU4zXjv/PDT6fb2Eui6qvr/80Ij5CREGX&#43;/wqpdTzmqbFh4aGTKlphY1S6ng2YgkF4VJFYgAFoYhoamoqV0rdj4hlHrYwK0TOLGKJRqMv52KRxSOPPHItEX0DAGrB3aIPWyC&#43;kclknli9evXRUqw7xV1dJnFeuj4BAKaH&#43;9/NzBuIaGKGn8PJEydOyApgQQSgIAjuqa6uvgoAboM8pbbIJYh4V21t7RwAyGqOvdbW1rCu650AcLOHaxlWSv1zX1/fr0u4&#43;pSfXQVdCmQymYymaaMehNfw2NjY&#43;vXr1x&#43;XlkQQZApYEIoKTdOWMPOcYr8PZ8TtY4ZhfDKb541EIrrf73&#43;Imb&#43;IiK7j/gDg3w8cOPCD6SYnzqJ9MJVKZVXgE1GIiLRSiZsjItMWdR5Efl0oFPqQtCKCIAJQEIqKZcuWXQYAS20n7lZkzQQunTESURkzf6apqak8WzZqaGhYQkRfs8WOSxuBUurldDr97cHBwVQOH1/ao7icVVFREchW4c6K6zoogZHjc22KiPs8iOpaIrpCWhJB&#43;D9kClgQigSfz3ejrXE8HGKLsf8BgG35GPVBxEoA&#43;Lzb3RmcPVwXh8PhawBgaLrlL1&#43;&#43;/KNE9A8AcIXb5NQA8LZlWT3r1q07mEvbMPMIIqbdJO627cLMNel0ugIAjmWj/OHh4aDf77&#43;6lBbN9vX1pTs7O3e70bN2/SeigFLqE93d3S/29PQoaVEEEYCCIBQ8kUhEZ&#43;Z7EbHaw2EJpdTqZDKZl5QmiUSirKam5kOI&#43;AWXoshWI/VEtHS6AjAajVYahvENRLz1rB51Uf4JpdS/rF27dnuubcPMGUeUuoKIamfNmnUZAOzNSkOv63UAsKDU3gtmftfZsq/yIp0Tuz7oiLjk1KlT6wBgRFoVQQSgIAgFT0NDw1xEvMPL7J3tHE3THIrH4/lKaWJ2dXX9hJk/i4jBi/3YccoaEd3Z0dHx9Jo1a6a0MjIWixnBYPAhRHzQbZvGzLZNnh0bG/tuPuL&#43;mHnEbcoSRxjPYuYbAeBXWRKAiwFgLpfYUmDLst4mokPO6LMbFjDzLQCwUVoV4VJHYgAFoQhg5tsRcb6H39sf2/v7&#43;w/k&#43;VK3MPN7Ho&#43;5AREXTbXAsrKyW4moCxFnuZzqVsy8TSm1ZsOGDeN5EipHAcBV&#43;hFHoPltYRyLxYLTLfvhhx&#43;uZubPEVFZSeWBsRV1On1IKfWGyzyP9m8qmbmpubm5SloVQQSgIAgFTTQaLdM0zdWo2jki4qRlWS/Y2iOf17p///7f2cLTyzG2cAOA&#43;yORiOcZiWXLll1BRN9ExCvB5QIHpdRBZn68t7d3T94aWqJRADjowSb2382hUOiGaRaNFRUVDxDRklLcNCMej6cAwK7nGTfC2uHecDh8fz62IrRZuHCh4Xa/bEEQASgIwu&#43;pra29xpm2co1SardS6tV8X6uT1PkFZh73po/o9sbGxnleyorFYkHDMLoQ8U63xzDzKWZek0wmt&#43;TTLnv37k3Yz8TjAFw9M3&#43;1vb29YqrltrW1LULErzkjX6W4bRqbprmVmfd46XAg4t&#43;Pj4/fk2NhRitXrrxu8eLFsdbWVhlxFEQACoLgnu7ubnJG/2o9HvqzdevWHZ6Ja56YmPg5M7/j8bArASDiwSFrwWDwISJ6CBHdpsU5s9VbMpl8Jo9xkWfYuHFjkoh2WJbFHtvnzxuG0TqVVDmdnZ03&#43;f3&#43;NYj4J1Ba6V/&#43;gO3bt&#43;8FgB8zs&#43;WyHjARXcXMvStWrPhSc3NzIJvXE41GtY6Ojo93dXU9ppQaJKIvMbMhrZlQaMgiEEEoYI4cOTI7GAzeg4iuHQgzj1qW9fJMJTUeGRk5OGfOnM0A0OjWIQOAj4geaGlpec5NXF5HR8cnEbELEavdLmxg5tczmUxfeXn56WzE1n0A5mQCM51Ov&#43;73&#43;4c9pMmxhUpIKfX1mpqaYHt7&#43;zN9fX3vX2w1cUdHR5WmaXcCwKNObGVJd/SHhobMxYsX/wcRfQ4ALhona9eVc0Tgv1ZXV9/Y1tb2bCKR2D0wMDDlbeLa29srdF2/GgDs9/UvEfFPEdFvWdbPpSUTRAAKguAJv9/fAADXeTmGmd8moh0zdc2Dg4NWZ2enLUC/4iZtzVnxxsyLqqqqrr1YDGF7e/vlmqb9DQDYztb1qlb7Z4ZhfNn&#43;v7y8PCf3johkWdYWAHh&#43;kvjLXQDwBgDc6fJcZ4XKZcz8dV3Xb&#43;zq6npuYmLiF4h4NJVKnT6nnug&#43;n6&#43;SiBYg4p8DwH0AcMnsepFMJt8IhULPOdPdPre2RcQ6AHgkEAjcHQgEfrRixYoX7ed0&#43;vTp8V27dk1s2bJl0tjCSCSiz507119VVRUkoo8Q0UIAsDslEQCYc7bDVpqz7oIIQEEQcko0GvUR0b1n47dcjnLZH5t37NgxPJPXnslkhgzD&#43;A0A3O5BPH1YKfWpaDT6qi0iJ/tNU1NTua7rywDgLo9Tmrb9GomoMZf3TUT2M9Bisdj34/H4H9xDf3//8c7Ozu/bNnE7onv2HhGxDBHvZeYlgUBgPzO/6/f7DzgrmtERe/MRcS4iXnLxZvF43Fy5cuUzlmUtIaJbPdpWczpZ1xFRCzPvCQQCry1atOidhoaGw0R0Uil15sVSSqGu67Msy6pDxCsR8VpEtO3&#43;YUQMOEm8RfUJIgAFQZg6dXV1VyDi3eAtfusYM790oZGLfHH48OHjl19&#43;&#43;WZEvM3DFKT9u6X19fXrAWCynIA4e/bs&#43;wHgq25Gec4/Nh8jMkqdmXW/0NQ7W5b134Zh/JaZb5hiSF4AEa&#43;2/84RMud2APgCHQM&#43;X/iUGqtWrdrb0dHxBCL2I2L9FE8zm4hsMX2zI&#43;htu51yPkHTNGRmuxNC59kWz5q4VO0rlB6yCEQQChRN024HgKvcOhTHEe0yTfPXM33tg4ODFjP/lJk9JXdGxGuZ&#43;ROTfbd8&#43;fKFiPh3RFRVrD42HA6/a5rmU8x8airHX6wufMD340qpbW5zERYrW7du/ZFlWd9SSo1lw75O2phZiFhh/wGA/T9dCoJaEAEoCMIMEIvFKgHgPi&#43;LPxwNuPno0aMnCuEeksnkm8y8w8uUmO1kNU37bDQaLTv/O8Mw7nAEYtFOsfX09CjTNL8LAP/lbA&#43;Xc5g5DQDfAYCBmVoYlC&#43;GhobM8fHxAWb&#43;NjOP56qqiOgTRAAKgpATgsHgdQBwi8fDjlmW9fKF4ufyTTweHwOAH7pJ0nuec11SU1Nz5R81VkQGERW9833qqadGLct6HAB&#43;4tU2HoWf/THBzAPJZNIu77gTL1jSbNiwYTyZTPYy8z8BwCGJyRMEEYCCUEzcBQBec//tTCQSbxbQPbBpmtuY&#43;X0PooURcW4gEPjU&#43;d858XUlwdq1a99Jp9OPKqU2MfNEDsQfO4Ivnk6nu59&#43;&#43;umjl9LLE4/HT&#43;7evXt1JpP5JgD8Jl&#43;jrZOgnOl3JU2aIAJQEIQPpK2trRYR7yYi9ODwTWZ&#43;cf369aOFdC/j4&#43;PvIOKrbgdhnNE9n1Lq7lLfr7W/v39XIpFYzsz/xsxHnRW90xZ&#43;dl2wRY9S6rFTp0499uSTTx6&#43;FN&#43;jTZs2pdeuXfuddDr9V8z8n8x83LFxTkcEnWdgAYD9TJ9XSj0ej8dHpWUTRAAKgvCB6Lp&#43;MyJe6/GwY0qpn14sSXC&#43;GRgYmLAs68cAkPR46E2VlZXXlfqzjsfj&#43;w4cOPAYMzcrpX4AAMNTFSiO8HuTmb8FAF/o7e19Jh6PJy/x14n7&#43;/tfO3nyZBsifsUZcT2eKxHIzCnnGTyTyWQeHB0dbVmzZs3P8r0ntyC48jXZOIlpQcqnwQ4A3FfiMcbZB2k4zacTF/o6wyqhAe0AUAdAIlncN8QACIx7GK10sdUIXdfnM/NbHkLd7I7cr1Kp1NuFeEOZTOYlInoBAC5HRFe1mIhsh/lxANj6e8MgHrQsawgRM4X68JRSmlLqd2&#43;99Zbrt3VwcNAWDS&#43;0tLRsC4fDC5RStzv5E&#43;cBQDUAhJz0L&#43;dWCMXMtrg7CQBHlFI7iegl0zS37dy5873J0gAppUZ1XX/VPpcLIWOXtdvN9dv32tjYuIeZf&#43;kyPtO&#43;7rwuVHJ2l3m&#43;paVlc2VlZSMzf9rZenCek0PRmEJsqf0MxuzOFwDsY&#43;ZfWJb1S6XU60eOHHnf2RdbEArX2WTlLN1M9151PJQ0SUYUPRI0lNrkq07AF3HSHiI/BxqEbio/kS4T23qkijLWP762LdHTU1y9kqampvLq6mpPe4emUqnTBTzag21tbeWGYejTuaf29nY/EZUV&#43;vMjovTq1atTUz0&#43;Eono8&#43;bNC1VUVNQT0RxEnE1EIWa2hVslEY1alpVGxBOZTOZQOp1&#43;r7y8fPhiZcZiMbtOBcvKyly1&#43;4ZhmKtWrUq4&#43;W0sFrPP63P5XLmuri7R09MzY0LetoWu65f5/f6riOjjSqmPIuI8Zq4hoprJBkccwX2MmUcA4CAAvK&#43;U2mua5j5E3G&#43;a5li&#43;95gWhJkXgIIgCEJe9CXINEvWsUX3/Pnzy2wRi4h&#43;wzD&#43;yDem02kLEU27Y6Lr&#43;oSIPUEQBEEQBEEQiq43KQiCIAiCIIgAFARBEARBEEQACoIgCIIgCCIABUEQBEEQBBGAgiAIgiAIgghAQRAEQRAEoZD43wAAAP//BCUKIM8M6FgAAAAASUVORK5CYII=\">\n</br></br>\nPlease find below a digest of Microsoft Azure activity for the week ending Thursday, May 7, 2020. If you have questions on any of the below items please reach out directly to your Microsoft account team for assistance.\n</p>\n<a href=\"https://azure.microsoft.com/en-us/updates/\">Azure Releases:</a></br>\n@{formatDateTime(getPastTime(7, 'Day'), 'MM/dd/yyyy')} - @{formatDateTime(utcNow(), 'MM/dd/yyyy')}\n</br>\n<i>Learn about important Azure product updates. To see these updates mapped out on a graphical heat map see <a href=\"https://azurecharts.com/?vm=lxd\">Azure Charts</a>.</i> \n</br>\n@{variables('AzureUpdatesTable')}\n</br>\n\n<a href=\"https://azure.microsoft.com/en-us/blog/topics/announcements/\">Azure Announcements:</a>\n</br>\n@{formatDateTime(getPastTime(7, 'Day'), 'MM/dd/yyyy')} - @{formatDateTime(utcNow(), 'MM/dd/yyyy')}\n</br>\n<i>Recent Azure Announcements</i>\n</br>\n@{variables('AzureAnnoucementsBlogTable')}\n</br>\n\n<a href=\"https://azure.microsoft.com/en-us/blog/topics/security/\">Azure Security Blog:</a>\n</br>\n@{formatDateTime(getPastTime(7, 'Day'), 'MM/dd/yyyy')} - @{formatDateTime(utcNow(), 'MM/dd/yyyy')}\n</br>\n<i>Recent security blog articles</i>\n</br>\n@{variables('AzureSecBlogTable')}\n</br>\n\n<a href=\"https://azure.microsoft.com/en-us/community/events/\">Azure Events:</a></br>\n<i>Upcoming events in the US</i>\n</br>\n@{variables('AzureEventsBlogTable')}\n\n<br>\n<br>\n<i>This email was created automatically using an <a href=\"https://azure.microsoft.com/en-us/services/logic-apps/\"> \nAzure Logic App</a>. To see how it was done, browse the source on <a href=\"https://github.com/kskvarci/AzureEmailDigestLogicApp\">GitHub</a>.</i>\n</body>\n</html>"
+                                    }
+                                ]
+                            }
+                        },
+                        "ZSendEmail": {
+                            "runAfter": {
+                                "YEmailBody": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "ApiConnection",
+                            "inputs": {
+                                "body": {
+                                    "Body": "<p>@{variables('YEmailBody')}</p>",
+                                    "Subject": "Microsoft Azure - Updates for Week Ending @{formatDateTime(utcNow(),'D')}",
+                                    "To": "[parameters('emailRecipients')]"
+                                },
+                                "host": {
+                                    "connection": {
+                                        "name": "@parameters('$connections')['office365']['connectionId']"
+                                    }
+                                },
+                                "method": "post",
+                                "path": "/v2/Mail"
+                            }
+                        }
+                    },
+                    "outputs": {}
+                },
+                "parameters": {
+                    "$connections": {
+                        "value": {
+                            "office365": {
+                                "connectionId": "[resourceId('Microsoft.Web/connections', parameters('office365ConnnectionName'))]",
+                                "connectionName": "office365",
+                                "id": "[subscriptionResourceId('Microsoft.Web/locations/managedApis', parameters('location'), parameters('office365ConnnectionName'))]"
+                            },
+                            "rss": {
+                                "connectionId": "[resourceId('Microsoft.Web/connections', parameters('rssConnnectionName'))]",
+                                "connectionName": "rss",
+                                "id": "[subscriptionResourceId('Microsoft.Web/locations/managedApis', parameters('location'), parameters('rssConnnectionName'))]"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    ]
+}
