@@ -9,7 +9,7 @@ This logic app was built to aggregate any number of RSS feeds in parallel, creat
 
 ## How the Logic App is Structured
 
-![designer](images/designer.png "Logic App Flow")
+![designer](images/designer.PNG "Logic App Flow")
 
 This Logic App Runs on a recurrence trigger. By default it's set up to run every Monday at 7AM EST.
 
