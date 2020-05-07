@@ -26,6 +26,10 @@ When all of the content aggregation has completed, an email body is constructed 
 
 Notice the naming scheme of the steps. THis was done intentionally to maintain a specific order in the source JSON. When manipulated through the graphical designer, Logic Apps orders actions in alphabetical order. Having the parallel branches grouped in the source JSON makes it easier to parse and extend.
 
+## Sample Email
+
+![sample](images/sample.PNG "Sample Email")
+
 ## Deployment
 
 - Create a resource group
