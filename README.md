@@ -38,5 +38,3 @@ Notice the naming scheme of the steps. THis was done intentionally to maintain a
 ```az deployment group create -g name --template-file azuredeploy.json```
 - You'll need to provide email recipients as a parameter
 - After deployment you will need to access the o365 connection in the portal and authorize it. Without conducting this step execution will fail.
-
-Lorem
